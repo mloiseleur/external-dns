@@ -33,6 +33,8 @@ import (
 	fakeKube "k8s.io/client-go/kubernetes/fake"
 
 	"sigs.k8s.io/external-dns/endpoint"
+	"sigs.k8s.io/external-dns/internal/testutils"
+	"sigs.k8s.io/external-dns/source/types"
 )
 
 // This is a compile-time validation that glooSource is a Source.
@@ -50,6 +52,7 @@ var (
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "internal",
 			Namespace: defaultGlooNamespace,
+			UID:       "gloo-proxy-uid",
 		},
 		Spec: proxySpec{
 			Listeners: []proxySpecListener{
@@ -551,15 +554,15 @@ func TestGlooSource(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, endpoints, 11)
 
-	assert.ElementsMatch(t, endpoints, []*endpoint.Endpoint{
-		{
+	testutils.ValidateEndpoints(t, endpoints, []*endpoint.Endpoint{
+		(&endpoint.Endpoint{
 			DNSName:          "a.test",
 			Targets:          []string{internalProxySvc.Status.LoadBalancer.Ingress[0].IP, internalProxySvc.Status.LoadBalancer.Ingress[1].IP, internalProxySvc.Status.LoadBalancer.Ingress[2].IP},
 			RecordType:       endpoint.RecordTypeA,
 			RecordTTL:        0,
 			Labels:           endpoint.Labels{},
 			ProviderSpecific: endpoint.ProviderSpecific{},
-		},
+		}).WithRefObject(testutils.RefSource(types.GlooProxy)),
 		{
 			DNSName:          "b.test",
 			Targets:          []string{internalProxySvc.Status.LoadBalancer.Ingress[0].IP, internalProxySvc.Status.LoadBalancer.Ingress[1].IP, internalProxySvc.Status.LoadBalancer.Ingress[2].IP},
