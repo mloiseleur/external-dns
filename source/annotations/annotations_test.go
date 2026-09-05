@@ -103,6 +103,15 @@ func TestSetLegacyAnnotationPrefix(t *testing.T) {
 		assert.False(t, ResolveLegacyAnnotations("Service", "default", "svc", anns))
 		assert.Equal(t, map[string]string{LegacyAnnotationPrefix + "hostname": "example.org"}, anns)
 	})
+
+	t.Run("a configured prefix starting with the legacy prefix disables resolution", func(t *testing.T) {
+		SetAnnotationPrefix(LegacyAnnotationPrefix + "v2-")
+		t.Cleanup(func() { SetAnnotationPrefix(DefaultAnnotationPrefix) })
+
+		SetLegacyAnnotationPrefix(LegacyAnnotationPrefix)
+		assert.False(t, ResolveLegacyAnnotations("Service", "default", "svc", anns))
+		assert.Equal(t, map[string]string{LegacyAnnotationPrefix + "hostname": "example.org"}, anns)
+	})
 }
 
 func TestResolveLegacyAnnotations(t *testing.T) {

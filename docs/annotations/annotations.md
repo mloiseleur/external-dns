@@ -32,13 +32,16 @@ The following table documents which sources support which annotations:
 
 ## Annotation prefix
 
-All annotations below use the prefix configured with `--annotation-prefix`, which defaults to `external-dns.kubernetes.io/`.
+Annotations below use the prefix set by `--annotation-prefix`, default `external-dns.kubernetes.io/`. Releases before v0.22.0
+used `external-dns.alpha.kubernetes.io/`.
 
-Releases before v0.22.0 used `external-dns.alpha.kubernetes.io/`. To migrate resources gradually, start ExternalDNS with
-`--enable-legacy-annotation-prefix`: annotations carrying the legacy prefix are then read as if they used the configured prefix.
-When a resource carries the same annotation under both prefixes, the configured prefix wins and a warning naming the resource
-and both values is logged. This flag is a migration aid and will be removed in a future release; drop it once no resource uses
-the legacy prefix any more.
+`--enable-legacy-annotation-prefix` rewrites legacy-prefixed annotations to the configured prefix before any filter, indexer or
+source reads them, so resources can be migrated gradually. On conflict the configured prefix wins and the ignored value is
+logged with the resource.
+
+Because the legacy key is rewritten rather than duplicated, `--annotation-filter` and `--fqdn-template` must reference the configured prefix.
+
+The flag is a migration aid and will be removed in a future release; drop it once no resource uses the legacy prefix.
 
 ## external-dns.kubernetes.io/access
 

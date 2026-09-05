@@ -122,10 +122,11 @@ func SetAnnotationPrefix(prefix string) {
 }
 
 // SetLegacyAnnotationPrefix makes ResolveLegacyAnnotations accept annotations carrying prefix in addition
-// to AnnotationKeyPrefix. An empty prefix, or one equal to AnnotationKeyPrefix, disables the resolution.
+// to AnnotationKeyPrefix. An empty prefix disables the resolution, as does one that AnnotationKeyPrefix
+// itself starts with: rewriting would then be a no-op or would rewrite its own output.
 // Like SetAnnotationPrefix, this must be called before any sources are initialized.
 func SetLegacyAnnotationPrefix(prefix string) {
-	if prefix == AnnotationKeyPrefix {
+	if strings.HasPrefix(AnnotationKeyPrefix, prefix) {
 		prefix = ""
 	}
 	legacyAnnotationPrefix = prefix

@@ -1251,3 +1251,43 @@ func TestResourceLabelIsSet(t *testing.T) {
 		}
 	}
 }
+
+// Not parallel: it toggles the package-level legacy annotation prefix.
+func TestRouteGroupSourceLegacyAnnotationPrefix(t *testing.T) {
+	annotations.SetLegacyAnnotationPrefix(annotations.LegacyAnnotationPrefix)
+	t.Cleanup(func() { annotations.SetLegacyAnnotationPrefix("") })
+
+	source := &routeGroupSource{
+		cli: &fakeRouteGroupClient{
+			rg: &routeGroupList{
+				Items: []*routeGroup{
+					{
+						Namespace: "namespace1",
+						Name:      "rg1",
+						UID:       "skipper-rg-uid-1234",
+						Annotations: map[string]string{
+							annotations.LegacyAnnotationPrefix + "hostname": "legacy.k8s.example",
+							annotations.LegacyAnnotationPrefix + "ttl":      "60",
+						},
+						Status: routeGroupStatus{
+							LoadBalancer: routeGroupLoadBalancerStatus{
+								RouteGroup: []routeGroupLoadBalancer{{Hostname: "lb.example.org"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got, err := source.Endpoints(t.Context())
+	require.NoError(t, err)
+	testutils.ValidateEndpoints(t, got, []*endpoint.Endpoint{
+		(&endpoint.Endpoint{
+			DNSName:    "legacy.k8s.example",
+			RecordType: endpoint.RecordTypeCNAME,
+			Targets:    endpoint.Targets{"lb.example.org"},
+			RecordTTL:  endpoint.TTL(60),
+		}).WithRefObject(testutils.RefSource(string(types.SkipperRouteGroup))),
+	})
+}

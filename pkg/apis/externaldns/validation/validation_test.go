@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"sigs.k8s.io/external-dns/pkg/apis/externaldns"
+	"sigs.k8s.io/external-dns/source/annotations"
 )
 
 func TestValidateFlags(t *testing.T) {
@@ -107,6 +108,29 @@ func TestValidateFlags(t *testing.T) {
 	cfg = newValidConfig(t)
 	cfg.AnnotationPrefix = "external-dns.kubernetes.io/"
 	require.NoError(t, ValidateConfig(cfg))
+
+	t.Run("enable-legacy-annotation-prefix", func(t *testing.T) {
+		for _, tc := range []struct {
+			prefix  string
+			wantErr bool
+		}{
+			{prefix: "external-dns.kubernetes.io/"},
+			{prefix: "custom.io/"},
+			{prefix: annotations.LegacyAnnotationPrefix, wantErr: true},
+			{prefix: annotations.LegacyAnnotationPrefix + "v2/", wantErr: true},
+		} {
+			t.Run(tc.prefix, func(t *testing.T) {
+				cfg := newValidConfig(t)
+				cfg.AnnotationPrefix = tc.prefix
+				cfg.EnableLegacyAnnotationPrefix = true
+				if tc.wantErr {
+					require.ErrorContains(t, ValidateConfig(cfg), "--enable-legacy-annotation-prefix")
+				} else {
+					require.NoError(t, ValidateConfig(cfg))
+				}
+			})
+		}
+	})
 
 	t.Run("kube-api-qps and kube-api-burst", func(t *testing.T) {
 		for _, tc := range []struct {
