@@ -76,8 +76,8 @@ Route53 calls its unit of configuration a *resource record set*; the console lab
 share a name and type as long as each carries a distinct set identifier and a routing policy. ExternalDNS keys
 its plan on `(DNS name, set identifier)`, so clusters using different set identifiers never collide.
 
-`external-dns.kubernetes.io/set-identifier` is supported by the AWS provider only — the OCI provider warns and
-ignores it, others do not implement it.
+`external-dns.kubernetes.io/set-identifier` is supported in-tree by the AWS provider only — others in-tree do not
+implement it.
 
 Traffic split evenly across two clusters, annotating the same Service in each:
 
@@ -123,12 +123,13 @@ chosen roughly at random, varying per resolver, and returns all of them when the
 
 ## Pattern D: per-target ownership on CoreDNS
 
-`--coredns-strictly-owned` adds an ownership layer underneath the TXT registry: the provider stamps an `owner`
-field on every etcd entry it writes — one entry per target, registry TXT entries included — and filters reads
-by it. Each instance sees only its own entries, so two clusters never contend for the same name, while CoreDNS
-answers with every entry stored under it. Both clusters publishing `app.example.com` therefore produce one
-A response carrying both targets, and removing the workload in one cluster takes its entries — the ownership
-one included — out of etcd while leaving the other's target in place.
+With `--coredns-strictly-owned`, the provider stamps an `owner` field on every etcd entry it writes — one entry
+per target, registry TXT entries included — and filters reads by it. Each instance sees only its own entries,
+so two clusters never contend for the same name, while CoreDNS answers with every entry stored under it.
+
+Both clusters publishing `app.example.com` therefore produce one A response carrying both targets, and
+removing the workload in one cluster takes its entries — the ownership one included — out of etcd while
+leaving the other's target in place.
 
 ## Not supported: merging targets with the TXT registry
 
