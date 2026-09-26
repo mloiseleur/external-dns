@@ -35,6 +35,7 @@ import (
 
 	"sigs.k8s.io/external-dns/pkg/apis/externaldns"
 	kubeclient "sigs.k8s.io/external-dns/pkg/client"
+	"sigs.k8s.io/external-dns/pkg/events"
 	"sigs.k8s.io/external-dns/source/annotations"
 	"sigs.k8s.io/external-dns/source/template"
 	"sigs.k8s.io/external-dns/source/types"
@@ -106,6 +107,11 @@ type Config struct {
 	PreferAlias                    bool
 	PTRSupported                   bool
 	CreatePTR                      bool
+
+	// EventEmitter lets sources emit events on the objects they read. execute()
+	// always sets it (events.Discard when --events-emit selected nothing); sources
+	// must still tolerate nil, which is what tests pass.
+	EventEmitter events.EventEmitter
 
 	sources []string
 
