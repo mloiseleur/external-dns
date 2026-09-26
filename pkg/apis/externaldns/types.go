@@ -444,10 +444,12 @@ func sortedAllowedSources() []string {
 // most one, either because they ignore the flag or because they are not migrated yet.
 var multiNamespaceSources = []string{
 	"connector",
+	"crd",
 	"empty",
 	"fake",
 	"gloo-proxy",
 	"node",
+	"service",
 }
 
 // SourceSupportsMultipleNamespaces reports whether the source handles several --namespace values.
