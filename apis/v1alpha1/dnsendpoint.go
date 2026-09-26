@@ -31,6 +31,14 @@ const (
 	// InvalidReason marks a spec with at least one endpoint external-dns refused to
 	// plan, e.g. an SRV target without a trailing dot.
 	InvalidReason string = "Invalid"
+
+	// FilteredReason is a ReadyCondition reason: the spec was understood, but
+	// --domain-filter or the managed record types excluded every endpoint in it.
+	FilteredReason string = "Filtered"
+
+	// DryRunReason is a ReadyCondition reason: the endpoints were planned, but
+	// --dry-run kept the changes from reaching the DNS provider.
+	DryRunReason string = "DryRun"
 )
 
 // +genclient
@@ -43,7 +51,9 @@ const (
 // +kubebuilder:resource:path=dnsendpoints
 // +kubebuilder:subresource:status
 // +kubebuilder:metadata:annotations="api-approved.kubernetes.io=https://github.com/kubernetes-sigs/external-dns/pull/2007"
+// +kubebuilder:printcolumn:name="Endpoints",type=integer,JSONPath=`.status.endpoints`
 // +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=`.status.conditions[?(@.type=="Accepted")].status`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +versionName=v1alpha1
 type DNSEndpoint struct {
@@ -73,7 +83,13 @@ type DNSEndpointStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions observe the DNSEndpoint state: Accepted (the spec was understood).
+	// Endpoints is how many endpoints from spec entered the plan on the last
+	// reconcile. Those dropped by validation or the filters are not counted.
+	// +optional
+	Endpoints int32 `json:"endpoints"`
+
+	// Conditions observe the DNSEndpoint state: Accepted (the spec was understood)
+	// and Ready (the provider applied it).
 	// +optional
 	// +listType=map
 	// +listMapKey=type

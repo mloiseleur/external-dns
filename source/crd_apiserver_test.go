@@ -96,9 +96,9 @@ func TestCRDSourceAnnotationFilterAgainstAPIServer(t *testing.T) {
 	}
 }
 
-// NewCRDSource is the only place the crd source learns --default-targets; the
-// other tests build it through newCrdSource and set it by hand.
-func TestNewCRDSourceCopiesDefaultTargets(t *testing.T) {
+// NewCRDSource is the only place the crd source learns --default-targets and
+// --dry-run; the other tests build it through newCrdSource and set them by hand.
+func TestNewCRDSourceCopiesDefaultTargetsAndDryRun(t *testing.T) {
 	targetless := newFilterTestDNSEndpoint("targetless", "targetless.example.com", "", nil)
 	targetless.Spec.Endpoints[0].Targets = nil
 
@@ -117,6 +117,11 @@ func TestNewCRDSourceCopiesDefaultTargets(t *testing.T) {
 			cfg:      &Config{DefaultTargets: []string{"192.0.2.10"}},
 			expected: []string{"targetless.example.com"},
 		},
+		{
+			title:    "dry run",
+			cfg:      &Config{DryRun: true},
+			expected: nil,
+		},
 	} {
 		t.Run(tt.title, func(t *testing.T) {
 			restConfig := startFakeDNSEndpointAPIServer(t, []apiv1alpha1.DNSEndpoint{targetless})
@@ -130,6 +135,7 @@ func TestNewCRDSourceCopiesDefaultTargets(t *testing.T) {
 			cs, ok := src.(*crdSource)
 			require.True(t, ok)
 			assert.Equal(t, len(tt.cfg.DefaultTargets) > 0, cs.defaultTargets)
+			assert.Equal(t, tt.cfg.DryRun, cs.dryRun)
 
 			endpoints, err := src.Endpoints(ctx)
 			require.NoError(t, err)

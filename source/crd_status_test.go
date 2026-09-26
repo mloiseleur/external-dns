@@ -24,7 +24,6 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -34,7 +33,6 @@ import (
 
 	apiv1alpha1 "sigs.k8s.io/external-dns/apis/v1alpha1"
 	"sigs.k8s.io/external-dns/endpoint"
-	logtest "sigs.k8s.io/external-dns/internal/testutils/log"
 	"sigs.k8s.io/external-dns/pkg/events"
 	eventsfake "sigs.k8s.io/external-dns/pkg/events/fake"
 	"sigs.k8s.io/external-dns/source/types"
@@ -322,6 +320,82 @@ func TestCRDSourceEmitsRejectionEventOnlyWhenTheVerdictChanges(t *testing.T) {
 	emitter.AssertNumberOfCalls(t, "Add", 2)
 }
 
+// An object whose endpoints were all rejected contributes nothing to the plan, so
+// ReportStatus never sees it and the previous verdict would linger.
+func TestCRDSourceClearsReadyWhenEveryEndpointIsRejected(t *testing.T) {
+	obj := &apiv1alpha1.DNSEndpoint{
+		Name: testDNSEndpointName, Namespace: testDNSEndpointNamespace, Generation: 1,
+		Spec: apiv1alpha1.DNSEndpointSpec{Endpoints: []*endpoint.Endpoint{
+			{DNSName: "example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordType: endpoint.RecordTypeA},
+		}},
+	}
+
+	fakeCache := newFakeCRDCache(t, nil, obj)
+	cs, err := newCrdSource(t.Context(), fakeCache, fakeCache.Client, "", nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = cs.Endpoints(t.Context())
+	require.NoError(t, err)
+	cs.ReportStatus(t.Context(), []PlannedObject{
+		{Ref: events.NewObjectReference(obj, types.CRD), Endpoints: 1},
+	}, nil)
+
+	programmed := readDNSEndpoint(t, fakeCache.Client)
+	require.Equal(t, int32(1), programmed.Status.Endpoints)
+	require.Equal(t, apiv1alpha1.ProgrammedReason,
+		meta.FindStatusCondition(programmed.Status.Conditions, apiv1alpha1.ReadyCondition).Reason)
+
+	// The user breaks the only endpoint.
+	programmed.Spec.Endpoints[0].Targets = endpoint.Targets{"1.2.3.4."}
+	require.NoError(t, fakeCache.Client.Update(t.Context(), programmed))
+
+	_, err = cs.Endpoints(t.Context())
+	require.NoError(t, err)
+
+	got := readDNSEndpoint(t, fakeCache.Client)
+	assert.Equal(t, apiv1alpha1.InvalidReason,
+		meta.FindStatusCondition(got.Status.Conditions, apiv1alpha1.AcceptedCondition).Reason)
+
+	ready := meta.FindStatusCondition(got.Status.Conditions, apiv1alpha1.ReadyCondition)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionFalse, ready.Status)
+	assert.Equal(t, apiv1alpha1.InvalidReason, ready.Reason, "Ready must not still claim Programmed")
+	assert.Zero(t, got.Status.Endpoints, "the endpoint count must not survive the rejection")
+}
+
+// An emptied spec has nothing to be ready about, so the condition goes away.
+func TestCRDSourceRemovesReadyWhenSpecBecomesEmpty(t *testing.T) {
+	obj := &apiv1alpha1.DNSEndpoint{
+		Name: testDNSEndpointName, Namespace: testDNSEndpointNamespace, Generation: 1,
+		Spec: apiv1alpha1.DNSEndpointSpec{Endpoints: []*endpoint.Endpoint{
+			{DNSName: "example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordType: endpoint.RecordTypeA},
+		}},
+	}
+
+	fakeCache := newFakeCRDCache(t, nil, obj)
+	cs, err := newCrdSource(t.Context(), fakeCache, fakeCache.Client, "", nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = cs.Endpoints(t.Context())
+	require.NoError(t, err)
+	cs.ReportStatus(t.Context(), []PlannedObject{
+		{Ref: events.NewObjectReference(obj, types.CRD), Endpoints: 1},
+	}, nil)
+
+	emptied := readDNSEndpoint(t, fakeCache.Client)
+	emptied.Spec.Endpoints = nil
+	require.NoError(t, fakeCache.Client.Update(t.Context(), emptied))
+
+	_, err = cs.Endpoints(t.Context())
+	require.NoError(t, err)
+
+	got := readDNSEndpoint(t, fakeCache.Client)
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions, apiv1alpha1.ReadyCondition))
+	assert.Zero(t, got.Status.Endpoints)
+	assert.Equal(t, apiv1alpha1.AcceptedReason,
+		meta.FindStatusCondition(got.Status.Conditions, apiv1alpha1.AcceptedCondition).Reason)
+}
+
 func TestCRDSourceEmitsNoEventWhenAllEndpointsValid(t *testing.T) {
 	obj := &apiv1alpha1.DNSEndpoint{
 		Name: testDNSEndpointName, Namespace: testDNSEndpointNamespace, Generation: 1,
@@ -342,6 +416,160 @@ func TestCRDSourceEmitsNoEventWhenAllEndpointsValid(t *testing.T) {
 	emitter.AssertNumberOfCalls(t, "Add", 0)
 }
 
+func TestCRDSourceReportStatus(t *testing.T) {
+	for _, ti := range []struct {
+		title           string
+		planned         int
+		applyErr        error
+		dryRun          bool
+		wantStatus      metav1.ConditionStatus
+		wantReason      string
+		wantMessagePart string
+	}{
+		{
+			title:           "provider applied the batch",
+			planned:         1,
+			applyErr:        nil,
+			wantStatus:      metav1.ConditionTrue,
+			wantReason:      apiv1alpha1.ProgrammedReason,
+			wantMessagePart: "1 endpoint(s) applied to the DNS provider",
+		},
+		{
+			title:           "provider rejected the batch",
+			planned:         1,
+			applyErr:        errors.New("route53: throttled"),
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      apiv1alpha1.FailedReason,
+			wantMessagePart: "route53: throttled",
+		},
+		{
+			// Nothing was offered to the provider, so Programmed would be a lie.
+			title:           "every endpoint excluded by the filters",
+			planned:         0,
+			applyErr:        nil,
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      apiv1alpha1.FilteredReason,
+			wantMessagePart: "No endpoint reached the DNS provider",
+		},
+		{
+			// --dry-run sends nothing, so Programmed would be a lie.
+			title:           "dry run",
+			planned:         1,
+			dryRun:          true,
+			wantStatus:      metav1.ConditionUnknown,
+			wantReason:      apiv1alpha1.DryRunReason,
+			wantMessagePart: "--dry-run kept them from the DNS provider",
+		},
+		{
+			title:           "dry run with every endpoint filtered still reports the filter",
+			planned:         0,
+			dryRun:          true,
+			wantStatus:      metav1.ConditionFalse,
+			wantReason:      apiv1alpha1.FilteredReason,
+			wantMessagePart: "No endpoint reached the DNS provider",
+		},
+	} {
+		t.Run(ti.title, func(t *testing.T) {
+			obj := &apiv1alpha1.DNSEndpoint{
+				Name: testDNSEndpointName, Namespace: testDNSEndpointNamespace, Generation: 7,
+				Spec: apiv1alpha1.DNSEndpointSpec{Endpoints: []*endpoint.Endpoint{
+					{DNSName: "example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordType: endpoint.RecordTypeA},
+				}},
+			}
+
+			fakeCache := newFakeCRDCache(t, nil, obj)
+			cs, err := newCrdSource(t.Context(), fakeCache, fakeCache.Client, "", nil, nil, nil)
+			require.NoError(t, err)
+			cs.dryRun = ti.dryRun
+
+			planned := PlannedObject{Ref: events.NewObjectReference(obj, types.CRD), Endpoints: ti.planned}
+			cs.ReportStatus(t.Context(), []PlannedObject{planned}, ti.applyErr)
+
+			got := readDNSEndpoint(t, fakeCache.Client)
+			assert.Equal(t, int32(ti.planned), got.Status.Endpoints) // #nosec G115 -- test data
+
+			cond := meta.FindStatusCondition(got.Status.Conditions, apiv1alpha1.ReadyCondition)
+			require.NotNil(t, cond, "Ready condition must be set")
+			assert.Equal(t, ti.wantStatus, cond.Status)
+			assert.Equal(t, ti.wantReason, cond.Reason)
+			assert.Equal(t, int64(7), cond.ObservedGeneration)
+			assert.Contains(t, cond.Message, ti.wantMessagePart)
+		})
+	}
+}
+
+// The controller hands every source the full object set, so a crd source must
+// not touch references produced elsewhere, nor blow up on a deleted object.
+func TestCRDSourceReportStatusIgnoresForeignAndMissingRefs(t *testing.T) {
+	obj := &apiv1alpha1.DNSEndpoint{
+		Name: testDNSEndpointName, Namespace: testDNSEndpointNamespace, Generation: 1,
+	}
+
+	fakeCache := newFakeCRDCache(t, nil, obj)
+	cs, err := newCrdSource(t.Context(), fakeCache, fakeCache.Client, "", nil, nil, nil)
+	require.NoError(t, err)
+
+	foreign := events.NewObjectReferenceFromParts("Ingress", "networking.k8s.io/v1", "foo", "test", "", types.Ingress)
+	deleted := events.NewObjectReferenceFromParts("DNSEndpoint", "externaldns.k8s.io/v1alpha1", "foo", "gone", "", types.CRD)
+
+	cs.ReportStatus(t.Context(), []PlannedObject{
+		{Ref: nil, Endpoints: 1},
+		{Ref: foreign, Endpoints: 1},
+		{Ref: deleted, Endpoints: 1},
+	}, nil)
+
+	got := readDNSEndpoint(t, fakeCache.Client)
+	assert.Empty(t, got.Status.Conditions, "no condition must be written for foreign or missing refs")
+}
+
+// Accepted is written from the listed (cache-backed) copy while Ready is written
+// after the apply. The read path can lag the last write, so pushing the stale
+// copy would drop the condition the other writer had just set. Its stale
+// resourceVersion makes the API server reject it, and updateStatus then re-reads.
+func TestCRDSourceStatusUpdateDoesNotClobberAStaleCondition(t *testing.T) {
+	obj := &apiv1alpha1.DNSEndpoint{
+		Name: testDNSEndpointName, Namespace: testDNSEndpointNamespace, Generation: 1,
+		Spec: apiv1alpha1.DNSEndpointSpec{Endpoints: []*endpoint.Endpoint{
+			{DNSName: "example.org", Targets: endpoint.Targets{"1.2.3.4"}, RecordType: endpoint.RecordTypeA},
+		}},
+	}
+
+	fakeCache := newFakeCRDCache(t, nil, obj)
+	cs, err := newCrdSource(t.Context(), fakeCache, fakeCache.Client, "", nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = cs.Endpoints(t.Context())
+	require.NoError(t, err)
+
+	// Snapshot the object as a lagging cache would hand it back: Accepted is set,
+	// Ready is not.
+	stale := readDNSEndpoint(t, fakeCache.Client)
+	require.Nil(t, meta.FindStatusCondition(stale.Status.Conditions, apiv1alpha1.ReadyCondition))
+
+	cs.ReportStatus(t.Context(), []PlannedObject{
+		{Ref: events.NewObjectReference(obj, types.CRD), Endpoints: 1},
+	}, nil)
+
+	// Now write Accepted again from the stale copy, changing it so a write happens.
+	cs.updateStatus(t.Context(), stale, func(status *apiv1alpha1.DNSEndpointStatus) {
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:    apiv1alpha1.AcceptedCondition,
+			Status:  metav1.ConditionFalse,
+			Reason:  apiv1alpha1.InvalidReason,
+			Message: "spec.endpoints[0]: something changed",
+		})
+	})
+
+	got := readDNSEndpoint(t, fakeCache.Client)
+	accepted := meta.FindStatusCondition(got.Status.Conditions, apiv1alpha1.AcceptedCondition)
+	require.NotNil(t, accepted)
+	assert.Equal(t, apiv1alpha1.InvalidReason, accepted.Reason, "the new Accepted must be stored")
+
+	ready := meta.FindStatusCondition(got.Status.Conditions, apiv1alpha1.ReadyCondition)
+	require.NotNil(t, ready, "Ready must survive a write driven from a stale copy")
+	assert.Equal(t, apiv1alpha1.ProgrammedReason, ready.Reason)
+}
+
 func TestTruncateConditionMessage(t *testing.T) {
 	short := "all good"
 	assert.Equal(t, short, truncateConditionMessage(short))
@@ -354,25 +582,4 @@ func TestTruncateConditionMessage(t *testing.T) {
 	multibyte := truncateConditionMessage(strings.Repeat("é", 40000))
 	assert.Equal(t, 32768, utf8.RuneCountInString(multibyte))
 	assert.True(t, utf8.ValidString(multibyte), "truncation must not split a rune")
-}
-
-// The crd source ignores objects from other sources.
-func TestCRDSourceReportStatusLogsOnlyItsOwnObjects(t *testing.T) {
-	hook := logtest.LogsUnderTestWithLogLevel(log.DebugLevel, t)
-
-	fakeCache := newFakeCRDCache(t, nil)
-	cs, err := newCrdSource(t.Context(), fakeCache, fakeCache.Client, "", nil, nil, nil)
-	require.NoError(t, err)
-
-	own := events.NewObjectReferenceFromParts("DNSEndpoint", "externaldns.k8s.io/v1alpha1", "foo", "mine", "", types.CRD)
-	foreign := events.NewObjectReferenceFromParts("Ingress", "networking.k8s.io/v1", "foo", "theirs", "", types.Ingress)
-
-	cs.ReportStatus(t.Context(), []PlannedObject{
-		{Ref: nil, Endpoints: 1},
-		{Ref: own, Endpoints: 2},
-		{Ref: foreign, Endpoints: 1},
-	}, errors.New("provider down"))
-
-	logtest.TestHelperLogContains("dnsendpoint foo/mine: 2 endpoint(s) planned, apply error: provider down", hook, t)
-	logtest.TestHelperLogNotContains("foo/theirs", hook, t)
 }

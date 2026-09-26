@@ -92,6 +92,7 @@ type Config struct {
 	KubeAPIBurst                   int
 	DefaultTargets                 []string
 	ForceDefaultTargets            bool
+	DryRun                         bool
 	OCPRouterName                  string
 	UpdateEvents                   bool
 	ResolveLoadBalancerHostname    bool
@@ -180,6 +181,7 @@ func NewSourceConfig(cfg *externaldns.Config, opts ...OverrideConfigOption) (*Co
 		KubeAPIBurst:                   cfg.KubeAPIBurst,
 		DefaultTargets:                 cfg.DefaultTargets,
 		ForceDefaultTargets:            cfg.ForceDefaultTargets,
+		DryRun:                         cfg.DryRun,
 		OCPRouterName:                  cfg.OCPRouterName,
 		UpdateEvents:                   cfg.UpdateEvents,
 		ResolveLoadBalancerHostname:    cfg.ResolveServiceLoadBalancerHostname,
