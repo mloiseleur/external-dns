@@ -1837,15 +1837,16 @@ func TestDeleteRegistryTXTRecord(t *testing.T) {
 	assert.Empty(t, client.services, "ownership TXT must not be left behind in etcd")
 }
 
-// Looking the key up must not widen the delete to entries under the same name.
+// Looking the key up must not widen the delete to other entries or subdomains.
 func TestDeleteRegistryTXTRecordKeepsOtherEntries(t *testing.T) {
 	const ownerA = `"heritage=external-dns,external-dns/owner=cluster-a"`
 	const ownerB = `"heritage=external-dns,external-dns/owner=cluster-b"`
 
 	client := &fakeETCDClient{services: map[string]Service{
-		"/skydns/com/example/a-app/aaaaaaaa": {Text: ownerA, TargetStrip: 1},
-		"/skydns/com/example/a-app/bbbbbbbb": {Text: ownerB, TargetStrip: 1},
-		"/skydns/com/example/a-app/cccccccc": {Host: "198.51.100.10", Text: ownerA, TargetStrip: 1},
+		"/skydns/com/example/a-app/aaaaaaaa":     {Text: ownerA, TargetStrip: 1},
+		"/skydns/com/example/a-app/bbbbbbbb":     {Text: ownerB, TargetStrip: 1},
+		"/skydns/com/example/a-app/cccccccc":     {Host: "198.51.100.10", Text: ownerA, TargetStrip: 1},
+		"/skydns/com/example/a-app/a-x/dddddddd": {Text: ownerA, TargetStrip: 1},
 	}}
 	coredns := coreDNSProvider{
 		client:        client,
@@ -1862,4 +1863,5 @@ func TestDeleteRegistryTXTRecordKeepsOtherEntries(t *testing.T) {
 	assert.NotContains(t, client.services, "/skydns/com/example/a-app/aaaaaaaa")
 	assert.Contains(t, client.services, "/skydns/com/example/a-app/bbbbbbbb", "another owner's entry must survive")
 	assert.Contains(t, client.services, "/skydns/com/example/a-app/cccccccc", "text sharing a key with an address record goes away with that record")
+	assert.Contains(t, client.services, "/skydns/com/example/a-app/a-x/dddddddd", "a subdomain's entry must survive")
 }

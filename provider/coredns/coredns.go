@@ -567,11 +567,16 @@ func (p coreDNSProvider) needsStoredKeyLookup(ep *endpoint.Endpoint) bool {
 // An entry carrying a host is skipped: its text shares a key with an A or CNAME
 // record and goes away with it.
 func (p coreDNSProvider) deleteTXTServices(ctx context.Context, ep *endpoint.Endpoint) error {
-	services, err := p.client.GetServices(ctx, p.etcdKeyFor(ep.DNSName)+"/")
+	base := p.etcdKeyFor(ep.DNSName) + "/"
+	services, err := p.client.GetServices(ctx, base)
 	if err != nil {
 		return err
 	}
 	for _, service := range services {
+		// Skip subdomain keys: only the random prefix sits below this name.
+		if strings.Count(strings.TrimPrefix(service.Key, base), "/")+1 != service.TargetStrip {
+			continue
+		}
 		if service.Host != "" || !slices.Contains(ep.Targets, service.Text) {
 			continue
 		}
