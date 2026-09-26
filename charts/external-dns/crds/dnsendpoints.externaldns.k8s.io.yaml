@@ -102,6 +102,7 @@ spec:
                           - NS
                           - PTR
                           - SRV
+                          - TLSA
                           - TXT
                         type: string
                       setIdentifier:
