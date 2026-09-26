@@ -17,8 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+
 	"sigs.k8s.io/external-dns/pkg/events"
 	"sigs.k8s.io/external-dns/plan"
+	"sigs.k8s.io/external-dns/source"
 )
 
 // emitChangeEvent emits a Kubernetes event for each DNS record change.
@@ -39,5 +42,52 @@ func emitChangeEvent(e events.EventEmitter, ch *plan.Changes, reason events.Reas
 	}
 	for _, ep := range ch.Delete {
 		e.Add(events.NewEventFromEndpoint(ep, events.ActionDelete, deleteReason))
+	}
+}
+
+// reportSyncStatus hands every reporter the objects behind the desired endpoints,
+// changed or not, with the apply error (nil on success).
+func reportSyncStatus(ctx context.Context, reporters []source.StatusReporter, p *plan.Plan, applyErr error) {
+	if len(reporters) == 0 {
+		return
+	}
+
+	// Objects repeat across endpoints: dedupe by Key, keeping first-seen order.
+	byKey := map[string]*source.PlannedObject{}
+	var keys []string
+	for _, ep := range p.Desired {
+		for _, ref := range ep.RefObjects() {
+			if ref == nil {
+				continue
+			}
+			if _, ok := byKey[ref.Key()]; !ok {
+				byKey[ref.Key()] = &source.PlannedObject{Ref: ref}
+				keys = append(keys, ref.Key())
+			}
+		}
+	}
+	if len(byKey) == 0 {
+		return
+	}
+
+	// Objects whose endpoints were all filtered out stay at zero.
+	for _, ep := range p.Planned {
+		for _, ref := range ep.RefObjects() {
+			if ref == nil {
+				continue
+			}
+			if obj, ok := byKey[ref.Key()]; ok {
+				obj.Endpoints++
+			}
+		}
+	}
+
+	objects := make([]source.PlannedObject, 0, len(keys))
+	for _, key := range keys {
+		objects = append(objects, *byKey[key])
+	}
+
+	for _, reporter := range reporters {
+		reporter.ReportStatus(ctx, objects, applyErr)
 	}
 }
