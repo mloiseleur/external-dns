@@ -23,6 +23,7 @@ package source
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
@@ -180,24 +181,28 @@ func (ps *podSource) addPodEndpointsToEndpointMap(endpointMap map[endpoint.Endpo
 	}
 
 	targets := annotations.TargetsFromTargetAnnotation(pod.Annotations)
+	// Lazy so the skip is logged at most once per pod, and only when an annotation asks for the PodIP.
+	podIP := sync.OnceValue(func() string { return usablePodIP(pod) })
 
-	ps.addInternalHostnameAnnotationEndpoints(endpointMap, pod, targets)
+	ps.addInternalHostnameAnnotationEndpoints(endpointMap, pod, targets, podIP)
 	ps.addHostnameAnnotationEndpoints(endpointMap, pod, targets)
-	ps.addKopsDNSControllerEndpoints(endpointMap, pod)
-	ps.addPodSourceDomainEndpoints(endpointMap, pod, targets)
+	ps.addKopsDNSControllerEndpoints(endpointMap, pod, podIP)
+	ps.addPodSourceDomainEndpoints(endpointMap, pod, targets, podIP)
 }
 
-func (ps *podSource) addInternalHostnameAnnotationEndpoints(endpointMap map[endpoint.EndpointKey][]string, pod *v1.Pod, targets []string) {
-	if domainAnnotation, ok := pod.Annotations[annotations.InternalHostnameKey]; ok {
-		if len(targets) == 0 && !podIPUsable(pod) {
-			return
-		}
-		for _, domain := range annotations.SplitHostnameAnnotation(domainAnnotation) {
-			if len(targets) == 0 {
-				addToEndpointMap(endpointMap, pod, domain, endpoint.SuitableType(pod.Status.PodIP), pod.Status.PodIP)
-			} else {
-				addTargetsToEndpointMap(endpointMap, pod, targets, domain)
-			}
+func (ps *podSource) addInternalHostnameAnnotationEndpoints(endpointMap map[endpoint.EndpointKey][]string, pod *v1.Pod, targets []string, podIP func() string) {
+	domainAnnotation, ok := pod.Annotations[annotations.InternalHostnameKey]
+	if !ok {
+		return
+	}
+	domainList := annotations.SplitHostnameAnnotation(domainAnnotation)
+	if len(targets) > 0 {
+		addTargetsToEndpointMap(endpointMap, pod, targets, domainList...)
+		return
+	}
+	if ip := podIP(); ip != "" {
+		for _, domain := range domainList {
+			addToEndpointMap(endpointMap, pod, domain, endpoint.SuitableType(ip), ip)
 		}
 	}
 }
@@ -213,12 +218,12 @@ func (ps *podSource) addHostnameAnnotationEndpoints(endpointMap map[endpoint.End
 	}
 }
 
-func (ps *podSource) addKopsDNSControllerEndpoints(endpointMap map[endpoint.EndpointKey][]string, pod *v1.Pod) {
+func (ps *podSource) addKopsDNSControllerEndpoints(endpointMap map[endpoint.EndpointKey][]string, pod *v1.Pod, podIP func() string) {
 	if ps.compatibility == "kops-dns-controller" {
 		if domainAnnotation, ok := pod.Annotations[kopsDNSControllerInternalHostnameAnnotationKey]; ok {
-			if podIPUsable(pod) {
+			if ip := podIP(); ip != "" {
 				for _, domain := range annotations.SplitHostnameAnnotation(domainAnnotation) {
-					addToEndpointMap(endpointMap, pod, domain, endpoint.SuitableType(pod.Status.PodIP), pod.Status.PodIP)
+					addToEndpointMap(endpointMap, pod, domain, endpoint.SuitableType(ip), ip)
 				}
 			}
 		}
@@ -230,26 +235,28 @@ func (ps *podSource) addKopsDNSControllerEndpoints(endpointMap map[endpoint.Endp
 	}
 }
 
-func (ps *podSource) addPodSourceDomainEndpoints(endpointMap map[endpoint.EndpointKey][]string, pod *v1.Pod, targets []string) {
-	if ps.podSourceDomain != "" {
-		domain := pod.Name + "." + ps.podSourceDomain
-		if len(targets) == 0 {
-			if !podIPUsable(pod) {
-				return
-			}
-			addToEndpointMap(endpointMap, pod, domain, endpoint.SuitableType(pod.Status.PodIP), pod.Status.PodIP)
-		} else {
-			addTargetsToEndpointMap(endpointMap, pod, targets, domain)
-		}
+func (ps *podSource) addPodSourceDomainEndpoints(endpointMap map[endpoint.EndpointKey][]string, pod *v1.Pod, targets []string, podIP func() string) {
+	if ps.podSourceDomain == "" {
+		return
+	}
+	domain := pod.Name + "." + ps.podSourceDomain
+	if len(targets) > 0 {
+		addTargetsToEndpointMap(endpointMap, pod, targets, domain)
+		return
+	}
+	if ip := podIP(); ip != "" {
+		addToEndpointMap(endpointMap, pod, domain, endpoint.SuitableType(ip), ip)
 	}
 }
 
-func podIPUsable(pod *v1.Pod) bool {
+// usablePodIP returns "" when the pod's IP must not be published.
+func usablePodIP(pod *v1.Pod) string {
 	if pod.Status.PodIP == "" || !podActive(pod) {
-		log.Debugf("skipping PodIP record for pod %q: IP=%q phase=%q terminating=%t", pod.Name, pod.Status.PodIP, pod.Status.Phase, pod.DeletionTimestamp != nil)
-		return false
+		log.Debugf("skipping PodIP records for pod %s/%s: IP=%q phase=%q terminating=%t",
+			pod.Namespace, pod.Name, pod.Status.PodIP, pod.Status.Phase, pod.DeletionTimestamp != nil)
+		return ""
 	}
-	return true
+	return pod.Status.PodIP
 }
 
 func podActive(pod *v1.Pod) bool {
